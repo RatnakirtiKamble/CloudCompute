@@ -22,7 +22,10 @@ async def get_current_user_from_token(token: str, db: AsyncSession):
 class JWTMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip auth routes
-        if request.url.path in ["/auth/login", "/auth/register"]:
+        if request.url.path in ["/auth/login", "/auth/register", "/auth/whoami"]:
+            return await call_next(request)
+        
+        if request.method == "OPTIONS":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization")

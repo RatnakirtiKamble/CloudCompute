@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import datetime, timedelta
-from jose import jwt
+from jose import jwt, JWTError
 
 from db.db_connection import get_db
 from schemas.user_schema import UserCreate, UserResponse
@@ -37,7 +37,8 @@ async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depe
         user_id: int = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    except jwt.PyJWTError:
+        user_id = int(user_id)
+    except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     user = await get_user_by_id(db, user_id=user_id)
@@ -75,6 +76,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
 
     access_token = create_access_token(data={"sub": str(user.id)})
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.get("/whoami", response_model=UserResponse)
+async def whoami(current_user: UserResponse = Depends(get_current_user)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    return current_user
 
 
 @router.post("/logout")

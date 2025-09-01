@@ -10,6 +10,7 @@ class Task(Base):
     task_type = Column(String(50), nullable=False) 
     status = Column(String(20), default="pending")  
     logs = Column(String, nullable=True)
+    path = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user_id = Column(Integer, ForeignKey("users.id"))

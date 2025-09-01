@@ -1,12 +1,23 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
+from enum import Enum
 
+class TaskEnum(str, Enum):
+    staticpage = "staticpage"
+    compute = "compute"
+
+class TaskStatusEnum(str, Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
 
 class TaskBase(BaseModel):
-    task_type: str
-    status: Optional[str] = "pending"
+    task_type: TaskEnum
+    status: Optional[TaskStatusEnum] = TaskStatusEnum.pending
     logs: Optional[str] = None
+    path: Optional[str] = None
 
 
 class TaskCreate(TaskBase):
@@ -19,4 +30,4 @@ class TaskResponse(TaskBase):
     user_id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True

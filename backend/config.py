@@ -1,10 +1,12 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite:///./test.db"
+    ASYNC_DATABASE_URL: str = "sqlite:///./test.db"
     SECRET_KEY: str = "defaultsecret"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    SYNC_DATABASE_URL: str = "sqlite:///./test.db"
+    NGROK_AUTH_TOKEN: str = ""
 
     class Config:
         env_file = ".env"

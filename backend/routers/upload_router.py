@@ -3,10 +3,18 @@ import os
 import shutil
 import uuid
 import subprocess
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request, Depends, Form, Body
 from starlette.responses import JSONResponse
 import docker
+
 from utils import _get_free_port
+from db.db_connection import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from crud import task_crud
+from schemas.task_schema import TaskCreate, TaskEnum, TaskResponse, TaskStatusEnum
+import asyncio 
+import glob
+from services import upload_service, delete_static_task, auto_shutdown_ngrok
 
 router = APIRouter(
     prefix="/static_pages",
@@ -21,106 +29,85 @@ docker_client = docker.from_env()
 @router.post("/static")
 async def upload_static(
     request: Request,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
 ):
+    user = request.state.user
+    user_id = user.id
     try:
-        user = request.state.user  
-        username = user.username
-
-        # Create user-specific upload directory
-        user_dir = os.path.join(BASE_DIR, username, "uploads")
-        os.makedirs(user_dir, exist_ok=True)
-
-        # Create project-specific folder
-        project_id = str(uuid.uuid4())
-        project_path = os.path.join(user_dir, project_id)
-        os.makedirs(project_path, exist_ok=True)
-
-        # Absolute path (Docker requires this)
-        project_path = os.path.abspath(project_path)
-
-        # Save uploaded ZIP/TAR
-        file_path = os.path.join(project_path, file.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # Unpack if archive
-        if file.filename.endswith(".zip"):
-            subprocess.run(["unzip", "-q", file_path, "-d", project_path], check=True)
-        elif file.filename.endswith(".tar.gz"):
-            subprocess.run(["tar", "-xzf", file_path, "-C", project_path], check=True)
-
-        # Try to detect the real static root (must contain index.html)
-        extracted_path = project_path
-        contents = os.listdir(project_path)
-
-        # If there's exactly one folder inside, and no index.html in root, dive into it
-        if len(contents) == 1 and os.path.isdir(os.path.join(project_path, contents[0])):
-            inner = os.path.join(project_path, contents[0])
-            if os.path.exists(os.path.join(inner, "index.html")):
-                extracted_path = inner
-
-        # If still no index.html, search recursively
-        if not os.path.exists(os.path.join(extracted_path, "index.html")):
-            for root, dirs, files in os.walk(project_path):
-                if "index.html" in files:
-                    extracted_path = root
-                    break
-
-        if not os.path.exists(os.path.join(extracted_path, "index.html")):
-            raise HTTPException(status_code=400, detail="No index.html found in uploaded archive")
-
-        # Serve with NGINX container
-        port = _get_free_port()
-        container_name = f"{username}-static-{project_id[:8]}"
-
-        docker_client.containers.run(
-            "nginx:alpine",
-            detach=True,
-            name=container_name,
-            ports={"80/tcp": port},
-            volumes={extracted_path: {"bind": "/usr/share/nginx/html", "mode": "ro"}},
+        new_task = TaskCreate(
+            task_type=TaskEnum.staticpage,
+            status=TaskStatusEnum.pending,
+            logs="Upload received, preparing workspace...",
+            user_id=user_id,
+            path=""
+        )
+        task_db = await task_crud.create_task(db, new_task)
+        task_id = task_db.id 
+        extracted_path = await upload_service.save_and_extract_upload(
+            file, user.id, task_id
+        )
+        public_url = upload_service.serve_static_docker(
+            extracted_path, user.id, task_id
         )
 
-        return JSONResponse({"url": f"http://localhost:{port}"})
+        await task_crud.update_task_status(
+            db, task_id,
+            TaskStatusEnum.running,
+            logs=f"Serving static site at {public_url}"
+        )
+
+        auto_shutdown_ngrok(public_url, task_id, user_id, db, delay_seconds=6000)
+
+        return {"url": public_url, "task_id": task_id}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------- CONTAINER HOSTING ----------
-@router.post("/container")
-async def upload_container(
-    request: Request,
-    file: UploadFile = File(...)
+# Deploy from GitHub
+@router.post("/github", response_model=TaskResponse)
+async def deploy_from_github(
+    repo_url: str = Body(...),
+    build_command: str = Body(...),
+    subdir: str | None = Body(None),
+    env_vars: dict | None = Body(None),
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
 ):
-    try:
-        user = request.state.user
-        username = user.username
+    user = request.state.user
+    task_data = TaskCreate(
+        task_type=TaskEnum.staticpage,
+        user_id=user.id,
+        status=TaskStatusEnum.pending,
+        logs="Cloning repo..."
+    )
+    task = await task_crud.create_task(db, task_data)
 
-        # User-specific dir
-        user_dir = os.path.join(BASE_DIR, username, "uploads")
-        os.makedirs(user_dir, exist_ok=True)
+    task_workspace = os.path.abspath(f"./workspaces/{user.username}/task_{task.id}")
+    os.makedirs(task_workspace, exist_ok=True)
 
-        project_id = str(uuid.uuid4())
-        image_path = os.path.join(user_dir, f"{project_id}.tar")
-        with open(image_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # Load docker image
-        with open(image_path, "rb") as f:
-            image = docker_client.images.load(f.read())[0]
-
-        # Run container
-        port = _get_free_port()
-        container_name = f"{username}-container-{project_id[:8]}"
-
-        docker_client.containers.run(
-            image.id,
-            detach=True,
-            name=container_name,
-            ports={"80/tcp": port},
+    asyncio.create_task(
+        upload_service.deploy_github_task(
+            task.id, user.id, repo_url, build_command, task_workspace, db, subdir, env_vars
         )
+    )
+    return task
 
-        return JSONResponse({"url": f"http://localhost:{port}"})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.delete("/tasks/{task_id}")
+async def delete_task_route(task_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Delete a task (static or GitHub based).
+    Stops Docker container, removes workspace, and deletes DB entry.
+    """
+    user = request.state.user  # Assuming you set this in middleware
+
+    # Verify task exists & belongs to user
+    task = await task_crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this task")
+
+    await delete_static_task(task_id, user.username, db)
+    return {"message": f"Task {task_id} deleted successfully"}

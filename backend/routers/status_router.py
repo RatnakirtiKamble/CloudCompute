@@ -3,13 +3,13 @@ import os
 import asyncio
 from typing import List
 from fastapi import APIRouter, Request, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import docker
 
 from db.db_connection import get_db
 from crud import get_task, get_tasks_for_user
-from schemas.task_schema import TaskResponse
+from schemas.task_schema import TaskResponse, TaskEnum
 
 router = APIRouter(
     prefix="/status",
@@ -32,27 +32,56 @@ async def task_status(task_id: int, request: Request, db: AsyncSession = Depends
     return task
 
 
-@router.get("/tasks", response_model=List[TaskResponse])
-async def list_user_tasks(request: Request, db: AsyncSession = Depends(get_db)):
-    """List all tasks for the authenticated user."""
+@router.get("/tasks/compute", response_model=List[TaskResponse])
+async def list_compute_tasks(request: Request, db: AsyncSession = Depends(get_db)):
+    """List only compute tasks for the authenticated user."""
     user = request.state.user
-    return await get_tasks_for_user(db, user.id)
+    tasks = await get_tasks_for_user(db, user.id)
+    return [t for t in tasks if t.task_type == TaskEnum.compute]
+
+
+@router.get("/tasks/static", response_model=List[TaskResponse])
+async def list_static_tasks(request: Request, db: AsyncSession = Depends(get_db)):
+    """List only staticpage tasks for the authenticated user."""
+    user = request.state.user
+    tasks = await get_tasks_for_user(db, user.id)
+    return [t for t in tasks if t.task_type == TaskEnum.staticpage]
 
 
 # --------------------
 # Logs (Stored in Workspace)
-# --------------------
-@router.get("/logs/{task_id}")
+@router.get("/logs/{task_id}", response_class=PlainTextResponse)
 async def get_task_log(task_id: int, request: Request):
-    """Return stored logs from the user's workspace."""
+    """Return stored logs from the user's workspace as plain text."""
     user = request.state.user
     log_path = os.path.abspath(f"./workspaces/{user.username}/task_{task_id}/container.log")
 
     if not os.path.exists(log_path):
         raise HTTPException(status_code=404, detail="Log file not found")
+    
+    with open(log_path, "r") as f:
+        log_content = f.read()
 
-    return FileResponse(log_path, filename=f"task_{task_id}_logs.txt")
+    return PlainTextResponse(content=log_content)
 
+
+# --------------------
+# List Artifacts
+# --------------------
+@router.get("/artifacts/{task_id}", response_model=List[str])
+async def list_artifacts(task_id: int, request: Request):
+    user = request.state.user
+    task_workspace = f"./workspaces/{user.username}/task_{task_id}"
+    if not os.path.exists(task_workspace):
+        raise HTTPException(status_code=404, detail="Task workspace not found")
+
+    artifacts = []
+    for root, dirs, files in os.walk(task_workspace):
+        for file in files:
+            full_path = os.path.join(root, file)
+            relative_path = os.path.relpath(full_path, task_workspace)
+            artifacts.append(relative_path)
+    return artifacts
 
 # --------------------
 # Artifacts
