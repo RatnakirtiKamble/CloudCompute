@@ -10,10 +10,10 @@ import {
 } from "lucide-react";
 
 import DashboardModal from "../Modals/DashboardModal";
-import AnalyticsModal from "../Modals/AnalyticsModal";
+// import AnalyticsModal from "../Modals/AnalyticsModal";
 import ComputeModal from "../Modals/ComputeModal";
 import StaticModal from "../Modals/StaticHostingModal";
-import UserModal from "../Modals/UserProfileModal";
+// import UserModal from "../Modals/UserProfileModal";
 
 export default function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
