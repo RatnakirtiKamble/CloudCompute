@@ -11,6 +11,7 @@ class TaskStatusEnum(str, Enum):
     pending = "pending"
     running = "running"
     completed = "completed"
+    deleted = "deleted"
     failed = "failed"
 
 class TaskBase(BaseModel):

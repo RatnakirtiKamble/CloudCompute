@@ -11,6 +11,13 @@ from db.db_connection import get_db
 from crud import get_task, get_tasks_for_user
 from schemas.task_schema import TaskResponse, TaskEnum
 
+from services import get_resource_status, get_gpu_vram
+import psutil
+import GPUtil
+import asyncio
+from fastapi import WebSocket, WebSocketDisconnect
+
+
 router = APIRouter(
     prefix="/status",
     tags=["Status & Logs"]
@@ -137,3 +144,28 @@ async def websocket_logs(websocket: WebSocket, task_id: int):
             await websocket.close()
     except WebSocketDisconnect:
         print(f"User disconnected from logs for task {task_id}")
+
+@router.websocket("/ws/resource_status")
+async def resource_status_ws(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            resource_data = get_resource_status()
+            await websocket.send_json(resource_data)
+            await asyncio.sleep(10)  
+    except WebSocketDisconnect:
+        print("Resource WebSocket disconnected")
+
+@router.websocket("/ws/gpu_vram")
+async def gpu_status_ws(websocket: WebSocket): 
+    await websocket.accept() 
+    try: 
+        while True: 
+            vram = get_gpu_vram() 
+            if vram is not None: 
+                await websocket.send_json({"available_vram": vram}) 
+            else: 
+                await websocket.send_json({"error": "Could not fetch GPU VRAM"}) 
+            await asyncio.sleep(10) # update every 2s 
+    except WebSocketDisconnect: 
+        print("GPU status WebSocket disconnected")

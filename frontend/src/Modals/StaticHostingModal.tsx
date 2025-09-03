@@ -89,7 +89,7 @@ export default function StaticHostingModal({ setActiveModal }: { setActiveModal:
 
   const handleDelete = async (taskId: number) => {
     try {
-      await api.delete(`/static_pages/delete/${taskId}`);
+      await api.delete(`/static_pages/tasks/${taskId}`);
       fetchTasks();
     } catch (err) {
       console.error("Failed to delete deployment:", err);
@@ -247,7 +247,19 @@ export default function StaticHostingModal({ setActiveModal }: { setActiveModal:
                 <tr key={t.id} className="hover:bg-gray-50">
                   <td className="px-3 py-2 border-b">{t.id}</td>
                   <td className="px-3 py-2 border-b">{t.status}</td>
-                  <td className="px-3 py-2 border-b break-words">{t.logs}</td>
+                  <td className="px-3 py-2 border-b break-words">
+                    {t.status === "running" && t.logs ? (
+                      (() => {
+                        const match = t.logs.match(/https?:\/\/\S+/); 
+                        return match ? (
+                          <a href={match[0]} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+                            {match[0]}
+                          </a>
+                        ) : t.logs
+                      })()
+                    ) : t.logs}
+                  </td>
+
                   <td className="px-3 py-2 border-b">{t.created_at ? format(new Date(t.created_at), "dd/MM/yyyy HH:mm") : "-"}</td>
                   <td className="px-3 py-2 border-b">
                     <button

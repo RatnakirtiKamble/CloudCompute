@@ -1,4 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 from models.task_model import Task
 from schemas.task_schema import TaskCreate, TaskStatusEnum
@@ -38,10 +39,20 @@ async def update_task_status(db: AsyncSession, task_id: int, status: str, logs: 
         await db.refresh(db_task)
     return db_task
 
+def update_task_status_sync(db: Session, task_id: int, status: str, logs: str = None):
+    db_task = db.query(Task).filter(Task.id == task_id).first()
+    if db_task:
+        db_task.status = status
+        if logs is not None:
+            db_task.logs = logs
+        db.commit()
+        db.refresh(db_task)
+    return db_task
+
 
 async def delete_task(db: AsyncSession, task_id: int):
     result = await db.execute(select(Task).filter(Task.id == task_id))
     db_task = result.scalars().first()
     if db_task:
-        await update_task_status(db, task_id, TaskStatusEnum.failed, logs="Task deleted by user.")
+        await update_task_status(db, task_id, TaskStatusEnum.deleted, logs="Task deleted.")
     return db_task

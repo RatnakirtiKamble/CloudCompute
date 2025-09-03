@@ -1,8 +1,17 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 
 export default function Header() {
 
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isDashboard = location.pathname.startsWith("/dashboard");
+
+  const logOut = () => {
+    localStorage.removeItem("token");
+    navigate("/");
+  }
+
 
   return (
     <header className="bg-white p-5 flex justify-between shadow-xl border-b border-gray-200  z-20 relative">
@@ -12,12 +21,19 @@ export default function Header() {
           <button className="text-gray-500 hover:text-gray-800 ">
               About
           </button>
-
-          <button 
+          {
+            isDashboard ?
+            <button 
             className="text-blue-500 hover:text-blue-700"
-            onClick={() => navigate("/auth")}>
-              Sign in
-          </button>
+            onClick={() => logOut()}>
+              Log out
+          </button> : 
+            <button 
+              className="text-blue-500 hover:text-blue-700"
+              onClick={() => navigate("/auth")}>
+                Sign in
+            </button>
+          }
       </div>
     </header>
 

@@ -7,8 +7,10 @@ from sqlalchemy.orm import sessionmaker
 
 
 from schemas import TaskStatusEnum
-from crud import update_task_status
+from crud import update_task_status_sync
 from config import settings
+
+from utils import release_gpu
 
 # --------------------
 # Celery setup
@@ -25,15 +27,18 @@ celery = Celery(
 engine = create_engine(settings.SYNC_DATABASE_URL)  # use sync DB URL
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
-def _set_status(task_id: int, status: str):
+def _set_status(task_id: int, status: str, logs: Optional[str] = None):
     try:
         with SessionLocal() as session:
-            update_task_status(session, task_id, status)
+            update_task_status_sync(session, task_id, status, logs)
             session.commit()
+            print(task_id, status)
     except Exception as e:
         print(f"[DB ERROR] Failed to update status for task {task_id}: {e}")
 
 # --------------------
+# Worker Task
+## --------------------
 # Worker Task
 # --------------------
 @celery.task(name="run_container_task")
@@ -47,18 +52,12 @@ def run_container_task(
     gpu: bool = False,
     env: Optional[Dict[str, str]] = None,
 ):
-    """
-    Run a containerized compute task.
-    Behavior:
-      - If `command` is None: use image CMD/ENTRYPOINT. Mount workspace at /outputs and set TASK_OUTPUT_DIR.
-      - If `command` is provided: override command and set working_dir=/workspace, mounting workspace at /workspace and TASK_OUTPUT_DIR.
-    """
     client = docker.from_env()
     container_id = None
     env = env or {}
+    logs_accumulated = []
 
     try:
-        # Ensure workspace exists
         os.makedirs(workspace, exist_ok=True)
 
         container_env = {k: str(v) for k, v in env.items()}
@@ -67,16 +66,14 @@ def run_container_task(
         container_env["TASK_OUTPUT_DIR"] = "/workspaces"
         runtime_command = command + (args or []) if command else None
 
-        # Host config for resources
         host_config = client.api.create_host_config(
             binds=binds,
             nano_cpus=cpu_cores * 1_000_000_000,
             device_requests=[
-                docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+                docker.types.DeviceRequest(count=1, capabilities=[["gpu"]])
             ] if gpu else None,
         )
 
-        # Create and start container
         container = client.api.create_container(
             image=image,
             command=runtime_command,
@@ -88,18 +85,27 @@ def run_container_task(
         container_id = container["Id"]
         client.api.start(container_id)
 
-        # Stream logs
+        # Capture logs
         for log in client.api.logs(container_id, stream=True, follow=True):
-            print(log.decode(errors="ignore").rstrip())
+            decoded = log.decode(errors="ignore").rstrip()
+            logs_accumulated.append(decoded)
+            print(decoded)  # still print for realtime debugging
 
         # Wait for exit
         exit_code = client.api.wait(container_id)["StatusCode"]
-        _set_status(task_id, TaskStatusEnum.completed if exit_code == 0 else TaskStatusEnum.failed)
+        final_logs = "\n".join(logs_accumulated)
+        _set_status(
+            task_id,
+            TaskStatusEnum.completed if exit_code == 0 else TaskStatusEnum.failed,
+            logs=final_logs
+        )
 
     except Exception as e:
         print(f"[ERROR] Task {task_id} failed: {e}")
-        _set_status(task_id, TaskStatusEnum.failed)
+        _set_status(task_id, TaskStatusEnum.failed, logs=f"Worker error: {e}")
     finally:
+        if gpu:
+            release_gpu(task_id)
         if container_id:
             try:
                 client.api.remove_container(container_id, force=True)

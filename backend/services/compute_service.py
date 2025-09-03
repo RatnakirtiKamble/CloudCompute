@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celery_workers.compute_worker import run_container_task
 
+from utils import try_acquire_gpu, enqueue_gpu_task
 # --------------------
 # Workspace helpers
 # --------------------
@@ -54,6 +55,9 @@ async def start_compute_task(
     user,
     db: AsyncSession
 ):
+    # Cap CPU cores
+    cpu_cores = min(task_request.resources.cpu, 4)
+
     # Create DB task row
     task_data = TaskCreate(
         task_type=TaskEnum.compute,
@@ -63,7 +67,7 @@ async def start_compute_task(
     )
     task = await create_task(db, task_data)
 
-    # Prepare workspace
+    # Workspace
     workspace = task_workspace_for(user.username, task.id)
     os.makedirs(workspace, exist_ok=True)
     task.path = workspace
@@ -71,7 +75,7 @@ async def start_compute_task(
     await db.commit()
     await db.refresh(task)
 
-    # Shape command/env
+    # Env
     command = task_request.command or None
     args = task_request.args or []
     env = dict(task_request.env or {})
@@ -79,18 +83,29 @@ async def start_compute_task(
     if command is None:
         env.setdefault("OUTPUT_DIR", "/outputs")
 
-    # Fire Celery worker
-    run_container_task.delay(
-        task_id=task.id,
-        image=task_request.image,
-        command=command,
-        args=args,
-        workspace=workspace,
-        cpu_cores=task_request.resources.cpu,
-        gpu=task_request.resources.gpu > 0,
-        env=env,
-    )
+    gpu_requested = task_request.resources.gpu
+    payload = {
+        "task_id": task.id,
+        "image": task_request.image,
+        "command": command,
+        "args": args,
+        "workspace": workspace,
+        "cpu_cores": cpu_cores,
+        "gpu": gpu_requested,  # always request, scheduler decides
+        "env": env,
+    }
+
+   
+    if gpu_requested:
+        if try_acquire_gpu(task.id):
+            run_container_task.delay(**payload)
+        else:
+            enqueue_gpu_task(task.id, {**payload})
+    else:
+        run_container_task.delay(**payload, gpu=False)
+
     return task
+
 
 async def list_user_tasks(user, db: AsyncSession):
     tasks = await get_tasks_for_user(db, user.id)

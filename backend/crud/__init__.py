@@ -9,7 +9,7 @@ from .usage_crud import (
 
 from .task_crud import (
     create_task, get_task, get_tasks_for_user,
-    update_task_status, delete_task
+    update_task_status, delete_task, update_task_status_sync
 )
 
 from .page_crud import (

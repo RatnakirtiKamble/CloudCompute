@@ -1,7 +1,10 @@
+
 import { useEffect, useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { Cpu, Play, Terminal, X } from "lucide-react";
 import ModalWrapper from "../Components/ModalWrapper";
+import ArtifactsModal from "../Modals/ArtifactsModal";
+import GpuUsageGraph from "../Components/Graph";
 import axios from "axios";
 
 type ComputeTask = {
@@ -19,27 +22,30 @@ type StartComputeForm = {
   gpu: boolean;
 };
 
-
 export default function ComputeModal({
   setActiveModal,
 }: {
   setActiveModal: (modal: string) => void;
 }) {
   const [tasks, setTasks] = useState<ComputeTask[]>([]);
+  const [showArtifactsModal, setShowArtifactsModal] = useState<ComputeTask | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [showStartModal, setShowStartModal] = useState(false);
-  const [currentLogsTask, setCurrentLogsTask] = useState<ComputeTask | null>(null);
+  const [currentLogsTask, setCurrentLogsTask] = useState<ComputeTask | null>(
+    null
+  );
+  const [gpuStatus, setGpuStatus] = useState<number | null>(null);
   const [form, setForm] = useState<StartComputeForm>({
     image: "",
     command: "",
     cpu_cores: 2,
     gpu: false,
   });
-  const [currentLogsTaskId, setCurrentLogsTaskId] = useState<number | null>(
-    null
-  );
   const [logs, setLogs] = useState<string[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRefLogs = useRef<WebSocket | null>(null);
+  const wsRefGpu = useRef<WebSocket | null>(null);
+
 
   const api = axios.create({
     baseURL: "http://localhost:8000",
@@ -48,7 +54,7 @@ export default function ComputeModal({
     },
   });
 
-  // Fetch tasks
+  // Fetch tasks initially
   useEffect(() => {
     api
       .get("/status/tasks/compute")
@@ -60,58 +66,67 @@ export default function ComputeModal({
       .finally(() => setLoading(false));
   }, []);
 
-  // WebSocket for logs
+  // GPU WS runs globally
   useEffect(() => {
-    if (!currentLogsTaskId) return;
-  
-    setLogs([]);
-    wsRef.current?.close();
-  
-    // Construct full WS URL
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsHost = "localhost:8080"; // your backend host + port
-    const ws = new WebSocket(`${wsProtocol}://${wsHost}/compute/logs/${currentLogsTaskId}`);
-    wsRef.current = ws;
-  
-    ws.onmessage = (ev) => setLogs((prev) => [...prev, ev.data]);
-    ws.onclose = () => console.log("WS closed");
-    ws.onerror = console.error;
-  
-    return () => ws.close();
-  }, [currentLogsTaskId]);
-  
+    const wsBase = "localhost:8000/status/ws";
+
+    wsRefGpu.current?.close();
+    const wsGpu = new WebSocket(`${wsProtocol}://${wsBase}/gpu_vram`);
+    wsRefGpu.current = wsGpu;
+
+    wsGpu.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (typeof data.available_vram === "number") {
+          setGpuStatus(data.available_vram);
+        }
+      } catch (err) {
+        console.error("Invalid GPU status:", err);
+      }
+    };
+
+    return () => wsGpu.close();
+  }, []);
+
   const startCompute = () => {
     api
       .post("/compute/start", form)
       .then((res) => {
         setTasks((prev) => [res.data, ...prev]);
         setShowStartModal(false);
-        setCurrentLogsTaskId(res.data.id);
+        setCurrentLogsTask(res.data);
+        openLogsWS(res.data.id);
       })
       .catch(console.error);
   };
 
-  const viewLogs = (task: ComputeTask) => {
+  const openLogsWS = (taskId: number) => {
     setLogs([]);
+    wsRefLogs.current?.close();
+
+    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsBase = "localhost:8000/status/ws";
+    const ws = new WebSocket(`${wsProtocol}://${wsBase}/logs/${taskId}`);
+    wsRefLogs.current = ws;
+
+    ws.onmessage = (ev) => setLogs((prev) => [...prev, ev.data]);
+    ws.onclose = () => console.log("Logs WS closed");
+    ws.onerror = console.error;
+  };
+
+  const viewLogs = (task: ComputeTask) => {
     setCurrentLogsTask(task);
+    setLogs([]);
 
     if (task.status === "running") {
-      const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const wsHost = "localhost:8000"; // backend host
-      const ws = new WebSocket(`${wsProtocol}://${wsHost}/compute/logs/${task.id}`);
-      wsRef.current = ws;
-
-      ws.onmessage = (ev) => setLogs((prev) => [...prev, ev.data]);
-      ws.onclose = () => console.log("WS closed");
-      ws.onerror = console.error;
+      openLogsWS(task.id);
     } else {
+      // fetch static logs if task completed/stopped
       api
-        .get(`status/logs/${task.id}`, { responseType: "text" })
-        .then((res) => {
-          setLogs(res.data);
-        })
+        .get(`/status/logs/${task.id}`, { responseType: "text" })
+        .then((res) => setLogs(res.data.split("\n")))
         .catch(console.error);
-        console.log(logs);
     }
   };
 
@@ -140,14 +155,11 @@ export default function ComputeModal({
         </div>
 
         {/* Top Section: Graph + Stats */}
-        {/* Top Section: Graph + Stats */}
-        <div className="flex gap-6 mb-4 h-64"> {/* Increased height from h-48 to h-64 */}
-          {/* Left: Graph placeholder */}
-          <div className="flex-1 bg-gray-100 rounded-2xl shadow-lg flex items-center justify-center">
-            <span className="text-gray-400">Graph Placeholder</span>
-          </div>
+        <div className="flex gap-6 mb-4 h-64">
 
-          {/* Right: Stats */}
+        <div className="flex-1 bg-gray-100 rounded-2xl shadow-lg flex items-center justify-center p-4">
+          <GpuUsageGraph />
+        </div>
           <div className="w-60 bg-gray-50 rounded-2xl shadow-lg divide-y divide-gray-200 flex flex-col justify-evenly p-4">
             <div className="py-2">
               <span className="text-sm text-gray-500">Last Compute</span>
@@ -161,12 +173,12 @@ export default function ComputeModal({
             </div>
             <div className="py-2">
               <span className="text-sm text-gray-500">Available GPU VRAM</span>
-              <p className="font-medium">8 GB</p>
+              <p className="font-medium">
+                {gpuStatus !== null ? `${gpuStatus} MB` : "Loading..."}
+              </p>
             </div>
           </div>
         </div>
-
-
 
         {/* Start New Compute button */}
         <div className="mb-4 flex justify-start">
@@ -196,6 +208,10 @@ export default function ComputeModal({
                 <th className="px-4 py-2 text-left text-sm font-medium text-gray-500">
                   Logs
                 </th>
+                <th className="px-4 py-2 text-left text-sm font-medium text-gray-500">
+                  Artifacts
+                </th>
+
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -235,6 +251,20 @@ export default function ComputeModal({
                         <Terminal className="w-4 h-4" />
                         View Logs
                       </button>
+                    </td>
+
+                    <td className="px-4 py-3 text-sm">
+                      {task.status === "completed" ? (
+                        <button
+                          onClick={() => setShowArtifactsModal(task)}
+                          className="flex items-center gap-1 text-purple-600 hover:text-purple-800"
+                        >
+                          <Terminal className="w-4 h-4" />
+                          View Artifacts
+                        </button>
+                      ) : (
+                        "-"
+                      )}
                     </td>
                   </tr>
                 ))
@@ -331,6 +361,15 @@ export default function ComputeModal({
             </div>
           </div>
         )}
+        {showArtifactsModal && (
+        <ArtifactsModal
+          isOpen={true}
+          onClose={() => setShowArtifactsModal(null)}
+          taskId={showArtifactsModal.id}
+          token={localStorage.getItem("token") || ""}
+        />
+      )}
+
 
         {/* Logs Viewer */}
         {currentLogsTask && (
@@ -346,9 +385,7 @@ export default function ComputeModal({
                 Logs - Task #{currentLogsTask.id}
               </h2>
               <div className="bg-black text-green-400 p-4 rounded h-96 overflow-y-auto font-mono text-sm border border-green-500">
-              <pre className="whitespace-pre-wrap">
-                {logs}
-              </pre>
+                <pre className="whitespace-pre-wrap">{logs.join("\n")}</pre>
               </div>
             </div>
           </div>
